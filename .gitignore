@@ -2,3 +2,4 @@
 *.d
 undofs
 undofs.creator.user
+compile_commands.json
