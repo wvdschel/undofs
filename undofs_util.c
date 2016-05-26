@@ -36,27 +36,79 @@ void* create_private_data(const char* rootdir)
     return context;
 }
 
-void undofs_versiondir_path(char fpath[PATH_MAX], const char *path)
-{
-    snprintf(fpath, PATH_MAX, "%s%s.node", PRIVATE_DATA->rootdir, path);
-}
-
-void undofs_directory_path(char fpath[PATH_MAX], const char *path)
+int undofs_versiondir_path(char* fpath, const char *path)
 {
     if(strcmp(path, "/") == 0)
-        snprintf(fpath, PATH_MAX, "%s/", PRIVATE_DATA->rootdir);
+    {
+        snprintf(fpath, PATH_MAX, "%s", PRIVATE_DATA->rootdir);
+        return 0;
+    }
     else
-        snprintf(fpath, PATH_MAX, "%s/%s.node/", PRIVATE_DATA->rootdir, path);
+    {
+        int i = 0;
+        const char* path_pos = path;
+        char * fpath_pos = fpath;
+        i = snprintf(fpath, PATH_MAX, "%s", PRIVATE_DATA->rootdir);
+        fpath_pos += i;
+
+        // Ignore leading '/' for mangling.
+        while(*path_pos == '/')
+        {
+            *fpath_pos++ = *path_pos++;
+            i++;
+        }
+        
+        // 12 is reserved for inserting a .node/ + final .node\0
+        while(fpath_pos + 12 < fpath + PATH_MAX
+              && *path_pos)
+        {
+            if(*path_pos == '/')
+            {
+                *fpath_pos++ = '.';
+                *fpath_pos++ = 'n';
+                *fpath_pos++ = 'o';
+                *fpath_pos++ = 'd';
+                *fpath_pos++ = 'e';
+                // Skip double slashes in filenames.
+                while(path_pos[1] == '/') path_pos++;
+            }
+            *fpath_pos++ = *path_pos++;
+        }
+
+        if (*path_pos)
+        {
+            *fpath_pos = 0;
+            errno = ENAMETOOLONG;
+            LOG_ERROR("Ran out of space before finishing mangling %s, result so far: %s", path, fpath);
+            return -1;
+        }
+        
+        // Trailing .node need not be added for root directory.
+        if(fpath_pos - fpath > i)
+        {
+            *fpath_pos++ = '.';
+            *fpath_pos++ = 'n';
+            *fpath_pos++ = 'o';
+            *fpath_pos++ = 'd';
+            *fpath_pos++ = 'e';
+        }
+        *fpath_pos++ = '\0';
+
+        LOG("Mangle '%s' -> '%s'.", path, fpath);
+        return 0;
+    }
+    
 }
 
 long undofs_latest_version(const char *path)
 {
     char fpath[PATH_MAX];
+    long max_file = -1;
 
-    undofs_versiondir_path(fpath, path);
+    if(undofs_versiondir_path(fpath, path))
+        return -1;
 
     DIR *dirp = opendir(fpath);
-    long max_file = -1;
 
     if(dirp == NULL)
     {
@@ -76,27 +128,25 @@ long undofs_latest_version(const char *path)
                 max_file = curr_file;
         }
     }
+    closedir(dirp);
 
     LOG("Latest version of %s is %ld", path, max_file);
     return max_file;
 }
 
-int undofs_latest_path(char fpath[PATH_MAX], const char *path)
+int undofs_latest_path(char *fpath, const char *path)
 {
     long version = undofs_latest_version(path);
     char directory_path[PATH_MAX];
-    undofs_versiondir_path(directory_path, path);
+    if(undofs_versiondir_path(directory_path, path))
+        return -1;
 
     if(is_deleted(directory_path))
         version++;
     if(is_directory(directory_path))
-    {
-        errno = EISDIR;
-        *fpath = 0;
-        return -1;
-    }
-
-    snprintf(fpath, PATH_MAX, "%s/%ld", directory_path, version);
+        snprintf(fpath, PATH_MAX, "%s", directory_path);
+    else
+        snprintf(fpath, PATH_MAX, "%s/%ld", directory_path, version);
     return 0;
 }
 
@@ -105,7 +155,8 @@ int undofs_new_path(char fpath[PATH_MAX], const char *path)
     long version = undofs_latest_version(path);
 
     char directory_path[PATH_MAX], old_path[PATH_MAX];
-    undofs_versiondir_path(directory_path, path);
+    if(undofs_versiondir_path(directory_path, path))
+        return -1;
 
     if(is_directory(directory_path))
     {
@@ -146,19 +197,51 @@ int undofs_new_path(char fpath[PATH_MAX], const char *path)
     return 0;
 }
 
-void undofs_clean_name(char name[PATH_MAX], const char *mangled)
+int undofs_clean_name(char* name, const char *mangled)
 {
-    size_t len = strlen(mangled);
+    // TODO: ENAMETOOLONG
+    char *name_pos = name;
+    const char *mangled_pos = mangled;
+    int demangled_last_char = 1, retval = 0;
 
-    if(len < 5 /* .node appendix */ || strcmp(mangled + len - 5, ".node"))
-        *name = 0;
-    else
+    // Ignore leading rootdir
+    size_t rootdir_len = strlen(PRIVATE_DATA->rootdir);
+    if(strncmp(PRIVATE_DATA->rootdir, mangled, rootdir_len) == 0)
+        mangled_pos += rootdir_len;
+    
+    // Ignore leading '/' for demangling.
+    if(*mangled_pos == '/')
+        *name_pos++ = *mangled_pos++;
+
+    while(*mangled_pos)
     {
-        strncpy(name, mangled, len - 5);
-        name[len-5] = 0;
+        // Skip .node at end of string or before path separator.
+        if(strncmp(mangled_pos, ".node", 5) == 0 &&
+           (mangled_pos[5] == '/' || mangled_pos[5] == '\0'))
+        {
+            demangled_last_char = 1;
+            mangled_pos += 5;
+        } else {
+            if(*mangled_pos == '/' && demangled_last_char == 0)
+            {
+                retval = -1;
+                *name_pos = 0; // Null-terminate for print
+                LOG("Warning: filename '%s' is not fully mangled (at '%s').", mangled, name);
+            }
+            *name_pos++ = *mangled_pos++;
+            demangled_last_char = 0;
+        }
+    }
+    *name_pos = 0;
+
+    if (demangled_last_char == 0)
+    {
+        retval = -1;
+        LOG("Warning: filename '%s' is not fully mangled (at '%s').", mangled, name);
     }
 
-    LOG("Demangle %s -> %s", mangled, name);
+    LOG("Demangle '%s' -> '%s'", mangled, name);
+    return retval;
 }
 
 int is_directory(const char *path)

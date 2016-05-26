@@ -26,12 +26,18 @@ static int undofs_getattr(const char *path, struct stat *statbuf)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return -errno;
+    
     if(! is_directory(fpath))
     {
         if(undofs_latest_path(fpath, path))
             return -errno;
     }
+    
+    if(is_deleted(fpath))
+        return -ENOENT;
 
     retstat = lstat(fpath, statbuf);
     if (retstat != 0)
@@ -130,7 +136,9 @@ static int undofs_mkdir(const char *path, mode_t mode)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return -errno;
 
     if(is_deleted(fpath))
     {
@@ -168,7 +176,9 @@ static int undofs_unlink(const char *path)
     int retstat = 0;
     char fpath[PATH_MAX];
 
-    undofs_versiondir_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return -errno;
 
     if(is_directory(fpath))
     {
@@ -200,7 +210,9 @@ static int undofs_rmdir(const char *path)
     int retstat = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
 
     // TODO: check if all children are deleted!
 
@@ -251,8 +263,12 @@ static int undofs_rename(const char *path, const char *newpath)
     char fpath[PATH_MAX];
     char fnewpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
-    undofs_directory_path(fnewpath, newpath);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+    retstat = undofs_versiondir_path(fnewpath, newpath);
+    if(retstat)
+        return retstat;
 
     if(is_directory(fpath)) // Directory:
     {
@@ -293,7 +309,10 @@ static int undofs_link(const char *path, const char *newpath)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX], fnewpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+    
     if(is_directory(fpath))
     {
         LOG("Can't link to %s, is a directory", path);
@@ -323,7 +342,10 @@ static int undofs_chmod(const char *path, mode_t mode)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+    
     if(! is_directory(fpath))
     {
         if(undofs_latest_path(fpath, path))
@@ -347,7 +369,10 @@ static int undofs_chown(const char *path, uid_t uid, gid_t gid)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+    
     if(! is_directory(fpath))
     {
         if(undofs_latest_path(fpath, path))
@@ -518,7 +543,10 @@ static int undofs_statfs(const char *path, struct statvfs *statv)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+    
     if(! is_directory(fpath))
     {
         if(undofs_latest_path(fpath, path))
@@ -561,6 +589,7 @@ static int undofs_statfs(const char *path, struct statvfs *statv)
  */
 static int undofs_flush(const char *path, struct fuse_file_info *fi)
 {
+    LOG("flush(%s)", path);
     return 0;
 }
 
@@ -638,7 +667,10 @@ static int undofs_opendir(const char *path, struct fuse_file_info *fi)
     int retstat = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+    
     if(! is_directory(fpath))
     {
         LOG("Tried to open %s as a directory, but it's not a directory.", fpath);
@@ -684,6 +716,9 @@ static int undofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, o
     LOG("readdir(%s), offset %ld", path, offset);
     DIR *dp;
     struct dirent *de;
+    char dirpath[PATH_MAX];
+    if(undofs_versiondir_path(dirpath, path))
+        return -errno;
 
     // once again, no need for fullpath -- but note that I need to cast fi->fh
     dp = (DIR *) (uintptr_t) fi->fh;
@@ -709,11 +744,12 @@ static int undofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, o
     // read the whole directory; the second means the buffer is full.
     do {
         char rpath[PATH_MAX], fpath[PATH_MAX];
-        snprintf(fpath, PATH_MAX, "%s%s", path, de->d_name);
-        undofs_clean_name(rpath, fpath);
-
-        int file_ok = 0;
-        undofs_directory_path(fpath, rpath);
+        int file_ok = 0, name_wrong = 0;
+        snprintf(fpath, PATH_MAX, "%s/%s", dirpath, de->d_name);
+        name_wrong |= undofs_clean_name(rpath, fpath);
+        if(name_wrong)
+            continue;
+    
         if(is_directory(fpath))
         {
             if(!is_deleted(fpath))
@@ -730,8 +766,9 @@ static int undofs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, o
             continue;
         }
 
-        undofs_clean_name(rpath, de->d_name);
-        LOG("Demangled name for %s is '%s'", de->d_name, rpath);
+        name_wrong |= undofs_clean_name(rpath, de->d_name);
+        if(name_wrong)
+            continue;
 
         if (filler(buf, rpath, NULL, 0) != 0) {
             errno = ENOMEM;
@@ -788,7 +825,10 @@ static int undofs_access(const char *path, int mask)
     int retstat = 0, retval = 0;
     char fpath[PATH_MAX];
 
-    undofs_directory_path(fpath, path);
+    retstat = undofs_versiondir_path(fpath, path);
+    if(retstat)
+        return retstat;
+
     if(! is_directory(fpath))
     {
         if(undofs_latest_path(fpath, path))

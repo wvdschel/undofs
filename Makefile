@@ -8,6 +8,9 @@ AUTODEPS=$(patsubst %.o,%.d,$(OBJECTS))
 
 all: undofs
 
+release: CFLAGS+=-DNOLOG
+release: all
+
 -include $(AUTODEPS)
 
 clean:

@@ -8,8 +8,13 @@
 #include <errno.h>
 #include <string.h>
 
+#ifndef NOLOG
 #define LOG(fmt, ...) { fprintf(undofs_logfile(),  "%s:%d\t"  fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); fflush(undofs_logfile()); }
 #define LOG_ERROR(fmt, ...) LOG("[error: %s] " fmt "\n", strerror(errno), ##__VA_ARGS__)
+#else
+#define LOG(fmt, ...)
+#define LOG_ERROR(fmt, ...)
+#endif
 
 FILE* undofs_logfile();
 
@@ -21,19 +26,13 @@ FILE* undofs_logfile();
 void* create_private_data(const char* rootdir);
 
 /**
- * Convert a relative path of a directory to the directory in the mounted fs.
- * @param fpath Output parameter to store the directory path.
- * @param path String containing relative path of the requested directory.
- */
-void undofs_directory_path(char fpath[PATH_MAX], const char *path);
-
-/**
  * Convert a relative path to the absolute directory path containing the different revisions of a file.
  *
  * @param fpath Output parameter to store the directory path.
  * @param path String containing relative path of the requested file.
+ * @return 0 on success, -1 on failure. errno will be set in case of error.
  */
-void undofs_versiondir_path(char fpath[PATH_MAX], const char *path);
+int undofs_versiondir_path(char* fpath, const char *path);
 
 /**
  * Checks which is the latest version number of a given file.
@@ -48,14 +47,15 @@ long undofs_latest_version(const char *path);
  * @param path original relative path provided by FUSE.
  * @return 0 on success, -1 on failure.
  */
-int undofs_latest_path(char fpath[PATH_MAX], const char *path);
+int undofs_latest_path(char* fpath, const char *path);
 
 /**
  * Convert an undofs mangled filename to a clean name.
  * @param name container for the clean filename.
  * @param mangled the mangled file name.
+ * @return 0 if file name was properly mangled, -1 otherwise.
  */
-void undofs_clean_name(char name[PATH_MAX], const char *mangled);
+int undofs_clean_name(char* name, const char *mangled);
 
 /**
  * Create a newer revision of a file.
@@ -63,7 +63,7 @@ void undofs_clean_name(char name[PATH_MAX], const char *mangled);
  * @param path the relative path of the file, provided by FUSE.
  * @return return 0 on succes, or a negative number on error.
  */
-int undofs_new_path(char fpath[PATH_MAX], const char *path);
+int undofs_new_path(char* fpath, const char *path);
 
 /**
  * Check if a file or directory is marked as deleted.
